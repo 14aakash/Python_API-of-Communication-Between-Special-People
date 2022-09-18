@@ -1,0 +1,249 @@
+import cv2
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from pathlib import Path
+import os.path
+
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications import MobileNet
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import tensorflow as tf
+print("Packages Imported Successfully")
+
+
+# Define helper functions
+
+# Convert folder to dataframe of images' paths & labels
+def get_paths_labels(path, allowed_extension="jpg"):
+    global Path
+    images_dir = Path(path)
+
+    filepaths = pd.Series((images_dir.glob(fr'**/*.{allowed_extension}'))).astype(str)
+    filepaths.name = 'path'
+    labels = pd.Series((images_dir.glob(fr'**/*.{allowed_extension}'))).astype(str)
+    labels.name = 'label'
+    # print("FILEPATHS : ", filepaths)
+    # print("LABELS : ", labels)
+    i = 0
+    for l in labels:
+        # print("FILEPATH : ", f)
+        temp = l.split("\\")
+        # print('TEMP : ', temp)
+        labels[i] = temp[-2]
+        i += 1
+    # labels.name = 'label'
+
+    # all_labels = filepaths[0].split("\\")
+    # labels = all_labels[-2]
+
+    # labels = filepaths.str.split("/")[:].str[-2]
+    # labels.name = 'label'
+
+    # type(labels)
+    # for l in labels:
+    #     print("LABEL : ", l)
+
+    # Concatenate filepaths and labels
+    df = pd.concat([filepaths, labels], axis=1)
+
+    # Shuffle the DataFrame and reset index
+    df = df.sample(frac=1).reset_index(drop=True)
+    return df
+
+
+# Read image
+def get_image(path):
+    image = cv2.imread(path)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return image
+
+
+# Visualize samples
+def visualize_samples(datagen, row_col_len=4, figsize=None):
+    random_indexes = np.random.randint(0, len(datagen.labels), row_col_len ** 2)
+
+    classes = np.array(list(datagen.class_indices))
+    labels = classes[np.array(datagen.labels)[random_indexes]]
+    filepaths = pd.Series(datagen.filenames)[random_indexes]
+    images = filepaths.apply(get_image).reset_index(drop=True)
+
+    figsize = figsize or np.array((row_col_len, row_col_len)) * 4
+    fig, ax = plt.subplots(row_col_len, row_col_len, figsize=figsize)
+    for i in range(row_col_len):
+        for j in range(row_col_len):
+            sample_index = i * row_col_len + j
+            ax[i, j].imshow(images[sample_index])
+            ax[i, j].set_title(labels[sample_index])
+            ax[i, j].set_axis_off()
+    plt.show()
+
+
+# Process image (input) for the model
+def process(img):
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, 500, 500))
+    img = tf.keras.applications.mobilenet.preprocess_input(img)
+    img = np.expand_dims(img, axis=0)
+    return img
+
+
+# Make classifications & visualize results
+def visualize_classifications(model, datagen, row_col_len=4, figsize=None):
+    random_indexes = np.random.randint(0, len(datagen.labels), row_col_len ** 2)
+
+    classes = np.array(list(datagen.class_indices))
+    labels = classes[np.array(datagen.labels)[random_indexes]]
+    filepaths = pd.Series(datagen.filenames)[random_indexes]
+
+    images = filepaths.apply(get_image).reset_index(drop=True)
+    processed_images = np.vstack(images.apply(process).to_numpy()[:])
+
+    y_pred = classes[np.argmax(model.predict(processed_images, verbose=0), axis=1)]
+    y_true = labels
+
+    figsize = figsize or np.array((row_col_len, row_col_len)) * 4
+    fig, ax = plt.subplots(row_col_len, row_col_len, figsize=figsize)
+
+    for i in range(row_col_len):
+        for j in range(row_col_len):
+            sample_index = i * row_col_len + j
+            ax[i, j].imshow(images[sample_index])
+            ax[i, j].set_title(f"Y true({y_true[sample_index]}) | Y pred ({y_pred[sample_index]})")
+            ax[i, j].set_axis_off()
+    plt.show()
+
+print ('Functions Loaded Successfully')
+
+# Read datasets
+
+# Create dataframe of {paths, labels}
+train_df = get_paths_labels('../Train')
+
+# Import another dataset (to train model on various data)
+temp_df = get_paths_labels('../Test')
+
+# Combine both datasets
+dataset = pd.concat((train_df, temp_df))
+# print(dataset)
+print('Dataset Loaded Successfully')
+
+# Classes counts
+print("Classes counts")
+counts = dataset.iloc[:, 1].value_counts().sort_index()
+print(counts.head(counts.shape[0]))
+print(f"\n\nDataset size = {counts.sum()} samples")
+
+
+# Preprocess data
+train_generator = tf.keras.preprocessing.image.ImageDataGenerator(
+    preprocessing_function=tf.keras.applications.mobilenet.preprocess_input,
+    validation_split=0.2,
+    horizontal_flip = True,
+    brightness_range=(0.75, 1.3),
+    zoom_range=0.2
+)
+
+
+train_images = train_generator.flow_from_dataframe(
+    dataframe=dataset,
+    x_col='path',
+    y_col='label',
+    target_size=(500, 500),
+    color_mode='rgb',
+    class_mode='categorical',
+    batch_size=64,
+    shuffle=True,
+    subset='training'
+)
+
+val_images = train_generator.flow_from_dataframe(
+    dataframe=dataset,
+    x_col='path',
+    y_col='label',
+    target_size=(500, 500),
+    color_mode='rgb',
+    class_mode='categorical',
+    batch_size=64,
+    shuffle=True,
+    subset='validation'
+)
+print('preprocessing done!')
+
+# visualize_samples(train_images)
+
+
+# Neural network architecture
+pretrainedModel = tf.keras.applications.MobileNet(
+    input_shape=(500, 500, 3),
+     include_top=False,
+     weights='imagenet',
+     pooling='avg'
+)
+
+pretrainedModel.trainable = False
+inputs = pretrainedModel.input
+
+x = tf.keras.layers.Dense(128, activation='relu')(pretrainedModel.output)
+x = tf.keras.layers.Dense(128, activation='relu')(x)
+outputs = tf.keras.layers.Dense(26, activation='softmax')(x)
+model = tf.keras.Model(inputs=inputs, outputs=outputs)
+optimizer_adam = tf.keras.optimizers.Adam(learning_rate = 0.005)
+
+print('Neural Network Architecture done!')
+
+# Compile model
+model.compile(
+    optimizer=optimizer_adam,
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+print('Compling Model Done!')
+
+# Fit model
+history = model.fit(
+    train_images,
+    validation_data=val_images,
+    epochs=2,
+ )
+print('Fit Model done!')
+
+# Training & Validation <> Loss & Accuracy
+
+# %matplotlib inline
+acc = np.array(history.history['accuracy'])
+val_acc = np.array(history.history['val_accuracy'])
+loss = np.array(history.history['loss'])
+val_loss = np.array(history.history['val_loss'])
+
+epochs = np.arange(len(acc))
+print("T&V done!")
+
+plt.plot(epochs, acc, 'r', label='Training accuracy')
+plt.plot(epochs, val_acc, 'b', label='Validation accuracy')
+plt.scatter(epochs[val_acc.argmax()], val_acc.max(), color='green', s=70)
+plt.title('Training and validation accuracy')
+plt.legend()
+plt.figure()
+
+plt.plot(epochs, loss, 'r', label='Training Loss')
+plt.plot(epochs, val_loss, 'b', label='Validation Loss')
+plt.scatter(epochs[val_loss.argmin()], val_loss.min(), color='green', s=70)
+plt.title('Training and validation loss')
+plt.legend()
+plt.show()
+print ("plt done!")
+# Visualize classifications on validation set
+visualize_classifications(model, val_images)
+
+# Save model
+model.save('Alphabets.h5')
+
+# Save model as a TFLITE (for direct use on Mobile Apps)
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+tflite_model = converter.convert()
+
+with open('Alphabets.tflite', 'wb') as f:
+    f.write(tflite_model)
